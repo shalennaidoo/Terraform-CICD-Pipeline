@@ -1,0 +1,235 @@
+# [Author Name]: Shalen Naidoo
+AWSTemplateFormatVersion: "2010-09-09"
+Description: AWS CI/CD pipeline for Terraform Code
+
+# Parameters section - Customize bucket name, table name, and repository name
+Parameters:
+  BucketName:
+    Description: S3 bucket name for Terraform state files.  
+    Type: String
+    Default: terraformstatebucketshalendev
+  TableName:
+    Description: DynamoDB table name for Terraform state lock management.  
+    Type: String
+    Default: terraformstatetableshalendev
+  RepositoryName:
+    Description: CodeCommit repository name for Terraform code.  
+    Type: String
+    Default: terraformcodereposhalendev
+
+# Resources section - Define AWS resources for the CI/CD pipeline
+Resources:
+  # TerraformStateBucket - S3 bucket for storing Terraform state files
+  TerraformStateBucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      BucketName: !Ref BucketName
+
+  # TerraformLockTable - DynamoDB table for managing state lock
+  TerraformLockTable:
+    Type: "AWS::DynamoDB::Table"
+    Properties:
+      TableName: !Ref TableName
+      AttributeDefinitions:
+        - AttributeName: LockID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: LockID
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+
+  # CodeBuildServiceRole - IAM role for CodeBuild project
+  CodeBuildServiceRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: "sts:AssumeRole"
+      Path: /
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/AdministratorAccess"
+
+  # CodeCommitRepository - CodeCommit repository for Terraform code
+  CodeCommitRepository:
+    Type: "AWS::CodeCommit::Repository"
+    Properties:
+      RepositoryName: !Ref RepositoryName
+      RepositoryDescription: CodeCommit repository for Terraform code.
+
+  # CodePipelineArtifactBucket - S3 bucket for CodePipeline artifacts
+  CodePipelineArtifactBucket:
+    Type: "AWS::S3::Bucket"
+
+  # CodeBuildProject - CodeBuild project for building Terraform code
+  CodeBuildProject:
+    Type: "AWS::CodeBuild::Project"
+    Properties:
+      Name: terraform-build
+      Description: CodeBuild project for building Terraform code.
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: "aws/codebuild/standard:5.0"
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: AWS_REGION
+            Value: !Ref "AWS::Region"
+          - Name: TF_VAR_bucket
+            Value: !Ref TerraformStateBucket
+          - Name: TF_VAR_dynamo_db_table
+            Value: !Ref TerraformLockTable
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            install:
+              commands:
+                - echo Installing Terraform...
+                - wget https://releases.hashicorp.com/terraform/1.0.1/terraform_1.0.1_linux_amd64.zip
+                - unzip terraform_1.0.1_linux_amd64.zip -d /usr/bin
+                - terraform -v 
+            build:
+              commands:
+                - echo Build started on `date`
+                - echo Initializing Terraform...
+                - terraform init
+                - echo Validating Terraform code...
+                - terraform validate
+                - echo Planning Terraform Apply...
+                - terraform plan -out=tfplan -input=false
+                - echo Applying Terraform code...
+                - terraform apply -auto-approve tfplan
+          artifacts:
+            files:
+              - '**/*'
+
+  # CodePipeline - CI/CD pipeline using CodeCommit and CodeBuild
+  CodePipeline:
+    Type: "AWS::CodePipeline::Pipeline"
+    Properties:
+      RoleArn: !GetAtt CodePipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref CodePipelineArtifactBucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: 1
+              OutputArtifacts:
+                - Name: SourceArtifact
+              Configuration:
+                RepositoryName: !Ref CodeCommitRepository
+                BranchName: main
+              RunOrder: 1
+        - Name: Build
+          Actions:
+            - Name: BuildAction
+              InputArtifacts:
+                - Name: SourceArtifact
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: 1
+              OutputArtifacts:
+                - Name: BuildArtifact
+              Configuration:
+                ProjectName: !Ref CodeBuildProject
+              RunOrder: 1
+
+  # CodePipelineRole - IAM role for CodePipeline
+  CodePipelineRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: "sts:AssumeRole"
+      Path: /
+      Policies:
+        - PolicyName: CodePipelinePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "codebuild:StartBuild"
+                  - "codebuild:BatchGetBuilds"
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - "codecommit:GetBranch"
+                  - "codecommit:GetCommit"
+                  - "codecommit:UploadArchive"
+                  - "codecommit:GetUploadArchiveStatus"
+                  - "codecommit:CancelUploadArchive"
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - "s3:GetObject"
+                  - "s3:PutObject"
+                  - "s3:ListBucket"
+                  - "s3:GetBucketVersioning"
+                Resource:
+                  - !GetAtt CodePipelineArtifactBucket.Arn
+                  - !Sub "${CodePipelineArtifactBucket.Arn}/*"
+
+  # CloudWatchEventRole - IAM role for CloudWatch Events
+  CloudWatchEventRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CloudWatchEventsInvokePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - codepipeline:StartPipelineExecution
+                Resource: "*"
+
+  # CodeCommitRepoTrigger - CloudWatch Events rule to trigger the pipeline
+  CodeCommitRepoTrigger:
+    Type: "AWS::Events::Rule"
+    Properties:
+      Description: "EventRule"
+      EventPattern:
+        source:
+          - "aws.codecommit"
+        detail-type:
+          - "CodeCommit Repository State Change"
+        resources:
+          - !GetAtt CodeCommitRepository.Arn
+      State: "ENABLED"
+      Targets:
+        - Arn:
+            Fn::Sub:
+              - "arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${CodePipeline}"
+              - CodePipeline: !Ref CodePipeline
+          RoleArn: !GetAtt CloudWatchEventRole.Arn
+          Id: "CodePipeline"
