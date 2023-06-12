@@ -12,19 +12,18 @@ The pipeline is triggered whenever there is a change in the AWS CodeCommit repos
 
 ## Flow Diagram
 
-```
-mermaid
-    graph TD
-        A[Developer] -->|Commits code| B(CodeCommit Repo)
-        B -->|Triggers| C(CodePipeline)
-        C -->|Source Stage| D{S3 Artifact Bucket}
-        C -->|Build Stage| E(CodeBuild)
-        E --> F{S3 Bucket}
-        E --> G{DynamoDB Table}
-        F -->|Stores state| H{Terraform Infrastructure}
-        G -->|Manages Locks| H
-        C -->|Deploys| H
-        I[CloudWatch Events] -->|Triggers| C
+```mermaid
+graph TD
+    A[Developer] -->|Commits code| B(CodeCommit Repo)
+    B -->|Triggers| C(CodePipeline)
+    C -->|Source Stage| D{S3 Artifact Bucket}
+    C -->|Build Stage| E(CodeBuild)
+    E --> F{S3 Bucket}
+    E --> G{DynamoDB Table}
+    F -->|Stores state| H{Terraform Infrastructure}
+    G -->|Manages Locks| H
+    C -->|Deploys| H
+    I[CloudWatch Events] -->|Triggers| C
 ```
 
 ## Explanation of the Flow
