@@ -9,6 +9,7 @@ The pipeline deploys AWS resources such as S3 bucket for storing Terraform state
 The pipeline is triggered whenever there is a change in the AWS CodeCommit repository, thanks to CloudWatch Events.
 
 ## Screenshots
+![Demo](assets/terraformpipeline.png) 
 
 ## Flow Diagram
 
